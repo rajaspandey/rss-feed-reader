@@ -1,3 +1,4 @@
+# Netlify configuration for Deep Extra Cover
 [build]
   command = "npm run build"
   publish = "dist"

@@ -1,5 +1,17 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { format, isToday, parseISO } from 'date-fns'
+import { auth, provider, db } from './firebase'
+import {
+  signInWithRedirect,
+  signOut as firebaseSignOut,
+  onAuthStateChanged,
+  getRedirectResult
+} from 'firebase/auth'
+import {
+  doc,
+  setDoc,
+  getDoc
+} from 'firebase/firestore'
 
 // Preset cricket RSS feeds organized by categories
 const DEFAULT_CATEGORIES = {
@@ -60,11 +72,72 @@ function App() {
   const [showAddCategoryForm, setShowAddCategoryForm] = useState(false)
   const [newCategoryName, setNewCategoryName] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('News & Media')
-  const [readArticles, setReadArticles] = useState(new Set())
+  const [user, setUser] = useState(null)
+  const [readArticles, setReadArticles] = useState(() => {
+    try {
+      const stored = localStorage.getItem('deepextracover_read_articles')
+      return stored ? new Set(JSON.parse(stored)) : new Set()
+    } catch {
+      return new Set()
+    }
+  })
+  const [firestoreLoaded, setFirestoreLoaded] = useState(false)
   const [selectedTag, setSelectedTag] = useState(null)
   const [allArticles, setAllArticles] = useState([])
   const [tagCounts, setTagCounts] = useState({})
   const [feedStats, setFeedStats] = useState({})
+
+  // Google Auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser)
+      if (firebaseUser) {
+        // Always load from Firestore and override local state
+        const userDoc = doc(db, 'users', firebaseUser.uid)
+        const snap = await getDoc(userDoc)
+        if (snap.exists() && snap.data().readArticles) {
+          setReadArticles(new Set(snap.data().readArticles))
+        } else {
+          setReadArticles(new Set())
+        }
+        setFirestoreLoaded(true)
+      } else {
+        // Load from localStorage
+        const stored = localStorage.getItem('deepextracover_read_articles')
+        setReadArticles(stored ? new Set(JSON.parse(stored)) : new Set())
+        setFirestoreLoaded(true)
+      }
+    })
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    getRedirectResult(auth).catch((error) => {
+      // Optionally log or handle the error
+      console.error('Google sign-in redirect error:', error)
+    })
+  }, [])
+
+  // Save readArticles to Firestore or localStorage
+  useEffect(() => {
+    if (!firestoreLoaded) return
+    if (user) {
+      // Save to Firestore
+      const userDoc = doc(db, 'users', user.uid)
+      setDoc(userDoc, { readArticles: Array.from(readArticles) }, { merge: true })
+    } else {
+      // Save to localStorage
+      localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(readArticles)))
+    }
+  }, [readArticles, user, firestoreLoaded])
+
+  // Sign in/out handlers
+  const signIn = useCallback(() => signInWithRedirect(auth, provider), [])
+  const signOut = useCallback(() => firebaseSignOut(auth), [])
+
+  useEffect(() => {
+    localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(readArticles)))
+  }, [readArticles])
 
   const extractTags = (title, description) => {
     const text = `${title} ${description}`.toLowerCase()
@@ -376,8 +449,22 @@ function App() {
       <div className="main-content">
         <div className="container">
           <div className="header">
-            <h1>Cricket RSS Reader</h1>
+            <h1>Deep Extra Cover</h1>
             <p>Stay updated with the latest cricket news and updates</p>
+            <div style={{ margin: '20px 0' }}>
+              {user ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                  <img src={user.photoURL} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%' }} />
+                  <span style={{ fontWeight: 600, fontSize: 20 }}>{user.displayName}</span>
+                  <span style={{ fontWeight: 500, fontSize: 18, color: '#28a745', marginLeft: 12 }}>
+                    Welcome, {user.displayName}!
+                  </span>
+                  <button onClick={signOut} style={{ padding: '8px 20px', borderRadius: 4, border: 'none', background: '#333', color: '#fff', cursor: 'pointer', fontSize: 16 }}>Sign out</button>
+                </div>
+              ) : (
+                <button onClick={signIn} style={{ padding: '8px 20px', borderRadius: 4, border: 'none', background: '#4285F4', color: '#fff', fontWeight: 500, cursor: 'pointer', fontSize: 16 }}>Sign in with Google</button>
+              )}
+            </div>
             {selectedTag && (
               <div className="active-filter">
                 <span>Filtering by: <strong>{selectedTag}</strong></span>
