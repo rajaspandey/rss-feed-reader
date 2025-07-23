@@ -15,6 +15,9 @@ build/
 .env.test.local
 .env.production.local
 
+# Firebase config
+src/firebase.js
+
 # IDE files
 .vscode/
 .idea/
