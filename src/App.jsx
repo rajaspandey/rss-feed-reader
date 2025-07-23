@@ -73,14 +73,7 @@ function App() {
   const [newCategoryName, setNewCategoryName] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('News & Media')
   const [user, setUser] = useState(null)
-  const [readArticles, setReadArticles] = useState(() => {
-    try {
-      const stored = localStorage.getItem('deepextracover_read_articles')
-      return stored ? new Set(JSON.parse(stored)) : new Set()
-    } catch {
-      return new Set()
-    }
-  })
+  const [readArticles, setReadArticles] = useState(new Set())
   const [firestoreLoaded, setFirestoreLoaded] = useState(false)
   const [selectedTag, setSelectedTag] = useState(null)
   const [allArticles, setAllArticles] = useState([])
@@ -90,21 +83,33 @@ function App() {
   // Google Auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      console.log('Auth state changed:', firebaseUser ? 'User signed in' : 'User signed out')
       setUser(firebaseUser)
+      
       if (firebaseUser) {
-        // Always load from Firestore and override local state
+        // User is signed in - clear localStorage and load from Firestore
+        console.log('Loading user data from Firestore for:', firebaseUser.email)
+        localStorage.removeItem('deepextracover_read_articles') // Clear localStorage
+        
         const userDoc = doc(db, 'users', firebaseUser.uid)
         const snap = await getDoc(userDoc)
+        
         if (snap.exists() && snap.data().readArticles) {
-          setReadArticles(new Set(snap.data().readArticles))
+          const firestoreData = snap.data().readArticles
+          console.log('Found Firestore data:', firestoreData.length, 'read articles')
+          setReadArticles(new Set(firestoreData))
         } else {
+          console.log('No Firestore data found, starting with empty set')
           setReadArticles(new Set())
         }
         setFirestoreLoaded(true)
       } else {
-        // Load from localStorage
+        // User is signed out - load from localStorage for guest users
+        console.log('Loading guest data from localStorage')
         const stored = localStorage.getItem('deepextracover_read_articles')
-        setReadArticles(stored ? new Set(JSON.parse(stored)) : new Set())
+        const guestData = stored ? JSON.parse(stored) : []
+        console.log('Found localStorage data:', guestData.length, 'read articles')
+        setReadArticles(new Set(guestData))
         setFirestoreLoaded(true)
       }
     })
@@ -113,31 +118,32 @@ function App() {
 
   useEffect(() => {
     getRedirectResult(auth).catch((error) => {
-      // Optionally log or handle the error
       console.error('Google sign-in redirect error:', error)
     })
   }, [])
 
-  // Save readArticles to Firestore or localStorage
+  // Backup save mechanism - only runs when readArticles changes from other sources
   useEffect(() => {
-    if (!firestoreLoaded) return
-    if (user) {
-      // Save to Firestore
-      const userDoc = doc(db, 'users', user.uid)
-      setDoc(userDoc, { readArticles: Array.from(readArticles) }, { merge: true })
-    } else {
-      // Save to localStorage
-      localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(readArticles)))
-    }
+    if (!firestoreLoaded || readArticles.size === 0) return
+    
+    // Debounce the save to avoid conflicts with immediate saves
+    const timeoutId = setTimeout(() => {
+      if (user) {
+        console.log('Backup save to Firestore for user:', user.email, 'Articles:', readArticles.size)
+        const userDoc = doc(db, 'users', user.uid)
+        setDoc(userDoc, { readArticles: Array.from(readArticles) }, { merge: true })
+      } else {
+        console.log('Backup save to localStorage for guest user. Articles:', readArticles.size)
+        localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(readArticles)))
+      }
+    }, 1000) // 1 second delay
+    
+    return () => clearTimeout(timeoutId)
   }, [readArticles, user, firestoreLoaded])
 
   // Sign in/out handlers
   const signIn = useCallback(() => signInWithRedirect(auth, provider), [])
   const signOut = useCallback(() => firebaseSignOut(auth), [])
-
-  useEffect(() => {
-    localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(readArticles)))
-  }, [readArticles])
 
   const extractTags = (title, description) => {
     const text = `${title} ${description}`.toLowerCase()
@@ -357,6 +363,21 @@ function App() {
       } else {
         newSet.add(articleId)
       }
+      
+      // Immediately save the updated state
+      if (firestoreLoaded) {
+        if (user) {
+          // Save to Firestore for authenticated users
+          console.log('Immediately saving to Firestore for user:', user.email, 'Articles:', newSet.size)
+          const userDoc = doc(db, 'users', user.uid)
+          setDoc(userDoc, { readArticles: Array.from(newSet) }, { merge: true })
+        } else {
+          // Save to localStorage for guest users
+          console.log('Immediately saving to localStorage for guest user. Articles:', newSet.size)
+          localStorage.setItem('deepextracover_read_articles', JSON.stringify(Array.from(newSet)))
+        }
+      }
+      
       return newSet
     })
     
@@ -451,20 +472,24 @@ function App() {
           <div className="header">
             <h1>Deep Extra Cover</h1>
             <p>Stay updated with the latest cricket news and updates</p>
-            <div style={{ margin: '20px 0' }}>
-              {user ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <img src={user.photoURL} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%' }} />
-                  <span style={{ fontWeight: 600, fontSize: 20 }}>{user.displayName}</span>
-                  <span style={{ fontWeight: 500, fontSize: 18, color: '#28a745', marginLeft: 12 }}>
-                    Welcome, {user.displayName}!
-                  </span>
-                  <button onClick={signOut} style={{ padding: '8px 20px', borderRadius: 4, border: 'none', background: '#333', color: '#fff', cursor: 'pointer', fontSize: 16 }}>Sign out</button>
+            
+            {user ? (
+              <div className="user-welcome">
+                <div className="user-info">
+                  <img src={user.photoURL} alt="avatar" className="user-avatar" />
+                  <div className="user-details">
+                    <h2 className="welcome-message">Welcome, {user.displayName?.split(' ')[0]}!</h2>
+                    <p className="user-email">{user.email}</p>
+                  </div>
                 </div>
-              ) : (
-                <button onClick={signIn} style={{ padding: '8px 20px', borderRadius: 4, border: 'none', background: '#4285F4', color: '#fff', fontWeight: 500, cursor: 'pointer', fontSize: 16 }}>Sign in with Google</button>
-              )}
-            </div>
+                <button onClick={signOut} className="sign-out-btn">Sign out</button>
+              </div>
+            ) : (
+              <div className="auth-section">
+                <p className="auth-message">Sign in to sync your reading progress across devices</p>
+                <button onClick={signIn} className="sign-in-btn">Sign in with Google</button>
+              </div>
+            )}
             {selectedTag && (
               <div className="active-filter">
                 <span>Filtering by: <strong>{selectedTag}</strong></span>
@@ -669,16 +694,8 @@ function App() {
                             checked={isRead}
                             onChange={() => toggleReadStatus(articleId)}
                           />
-                          <span className="checkmark"></span>
-                          <span className="read-label">{isRead ? 'Read' : 'Unread'}</span>
+                          <span className="read-label">{isRead ? 'Read' : 'Mark as read'}</span>
                         </label>
-                      </div>
-                      
-                      <div className="article-meta">
-                        <span className="article-date">
-                          {formatDate(article.pubDate)}
-                        </span>
-                        <span>By {article.author}</span>
                       </div>
                       
                       <h3>{article.title}</h3>
